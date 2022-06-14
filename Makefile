@@ -33,6 +33,7 @@ SIMDIR = $(BUILDDIR)/simdir
 
 OUTPUTDIR = output
 TOPMODULE = mkVirtualDevice
+TESTMODULE = mkTestVirtualDevice
 
 BSCFLAGS += -bdir $(BDIR)
 BSCFLAGS += -simdir $(SIMDIR)
@@ -42,11 +43,12 @@ BSCFLAGS += -sched-dot
 BSCFLAGS += -show-range-conflict
 #BSCFLAGS += -show-rule-rel \* \*
 #BSCFLAGS += -steps-warn-interval n
+LIBDIRS = %:BlueStuff:BlueStuff/BlueBasics:BlueStuff/BlueUtils:BlueStuff/AXI:+
 
 # Bluespec is not compatible with gcc > 4.9
 # This is actually problematic when using $test$plusargs
-CC = gcc-4.8
-CXX = g++-4.8
+#CC = gcc-4.8
+#CXX = g++-4.8
 
 TESTSDIR = Test
 SIMTESTSSRC = $(sort $(wildcard $(TESTSDIR)/*.bsv))
@@ -54,14 +56,14 @@ SIMTESTS = $(addprefix sim, $(notdir $(basename $(SIMTESTSSRC))))
 
 all: simTest verilog
 
-simTest: $(TESTSDIR)/Test.bsv VirtualDevice.bsv
+simTest: $(TESTSDIR)/TestVirtualDevice.bsv VirtualDevice.bsv
 	mkdir -p $(OUTPUTDIR)/$@-info $(BDIR) $(SIMDIR)
-	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -simdir $(SIMDIR) $(BSCFLAGS) -sim -g $(TOPMODULE) -u $<
-	CC=$(CC) CXX=$(CXX) $(BSC) -simdir $(SIMDIR) $(BSCFLAGS) -sim -e $(TOPMODULE) -o $(OUTPUTDIR)/$@
+	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -g $(TESTMODULE) -u $<
+	CC=$(CC) CXX=$(CXX) $(BSC) -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -e $(TESTMODULE) -o $(OUTPUTDIR)/$@
 
 verilog: VirtualDevice.bsv
 	mkdir -p $(OUTPUTDIR)/$@-info $(BDIR)
-	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -vdir $(OUTPUTDIR) -opt-undetermined-vals -unspecified-to X $(BSCFLAGS) -verilog -g VirtualDevice.v -u $<
+	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -vdir $(OUTPUTDIR) -opt-undetermined-vals -unspecified-to X $(BSCFLAGS) -p $(LIBDIRS) -verilog -g VirtualDevice.v -u $<
 
 .PHONY: clean mrproper all
 

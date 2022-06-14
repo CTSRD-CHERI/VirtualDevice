@@ -27,17 +27,12 @@
 
 package VirtualDevice;
 
-import FIFOF::*;
-import GetPut::*;
+import FF::*;
+import SourceSink::*;
 import Vector::*;
+import Routable :: *;
 import AXI4::*;
 import DefaultValue::*;
-
-
-import MemTypes::*;
-import MasterSlave::*;
-import Peripheral::*;
-import Debug::*;
 
 /**
  * An implementation of a peripheral that facilitates emulation of a virtual
@@ -50,8 +45,8 @@ interface VirtualDeviceIfc#(
   numeric type i,
   numeric type a,
   numeric type d);
-  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) management;
-  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) virtual;
+  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) mngt;
+  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) virt;
 endinterface
 
 /* Convenience functions to unify the AXI channels */
@@ -80,29 +75,53 @@ instance DefaultValue#(RspFlit#(i,d));
   function defaultValue = tagged Write defaultValue;
 endinstance
 
-function RspFlit#(i,d) defaultRspFromReq(ReqFlit#(i,a,d) req, d data);
-  RspFlit#(i,d) resp = ;
+function RspFlit#(i,d) defaultRspFromReq(ReqFlit#(i,a,d) req, Bit#(d) data) =
   case (req) matches
     tagged Write .wr:
-      resp = tagged Write AXI4_BFlit{ bid: wr.aw.awid
+      return tagged Write AXI4_BFlit{ bid: wr.aw.awid
                                     , bresp: OKAY
                                     , buser: ? };
     tagged Read .ar: begin
-      AXI4_RFlit#(i,a,0) r = defaultValue;
-      r.arid = ar.arid;
+      AXI4_RFlit#(i,d,0) r = defaultValue;
+      r.rid = ar.arid;
       r.rdata = data;
-      resp = tagged Read r;
+      return tagged Read r;
     end
-  endcase
-  return resp;
-endfunction
+  endcase;
 
-function a getAddr(ReqFlit#(i,a,d) req);
+function Bit#(a) getAddr(ReqFlit#(i,a,d) req) =
   case (req) matches
     tagged Write .wr: return wr.aw.awaddr;
     tagged Read .ar: return ar.araddr;
-  endcase
+  endcase;
+
+function Maybe#(ReqFlit#(i, a, d)) nextReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim);
+  if (axim.ar.canPeek) return Valid(Read(axim.ar.peek));
+  else if (axim.w.canPeek) return
+        Valid(Write(WriteReqFlit {
+                aw: axim.aw.peek,
+                w: axim.w.peek
+        }));
+  else return Invalid;
 endfunction
+
+function Action dropReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim) = action
+  if (nextReq(axim) matches tagged Valid .r)
+    case (r) matches
+      tagged Read  .r: axim.ar.drop;
+      tagged Write .w: begin
+        if (isLast(axim.w.peek)) axim.aw.drop;
+        axim.w.drop;
+      end
+    endcase
+endaction;
+
+function Action enqReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim, RspFlit#(i, d) rsp) = action
+  case (rsp) matches
+    tagged Read  .r: axim.r.put(r);
+    tagged Write .w: axim.b.put(w);
+  endcase
+endaction;
 
 /* Other convenience types and functions  */
 
@@ -122,47 +141,42 @@ typedef struct {
    Bool isRead;
    Bit#(TAdd#(wordaddress_width,2))  addr; // word address
    } Req#(numeric type wordaddress_width) deriving(Bits,Eq);
-function Bit#(6) decodeSize(Bit#(8) asize) = case(ar.arsize)
-                        0: return 1;
-                        1: return 2;
-                        2: return 4;
-                        3: return 8;
-                        4: return 16;
-                        5: return 32;
-                        default: return 0;
-
 
 /**
  * Implementation of the VirtualDeviceIfc interface. This uses a 20-bit 
  * address window for the virtual device.
  */
-(*synthesize*)
-module mkVirtualDevice (VirtualDeviceIfc#(i,a,d));
-  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimManagement <- mkAXI4ShimFF;
-  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimVirtual <- mkAXI4ShimFF;
-  FIFOF#(ReqFlit#(i, a, d))  req_virt_fifo <- mkFIFOF1;
-  FIFOF#(RspFlit#(i, d))         resp_virt_fifo <- mkFIFOF1;
-  FIFOF#(ReqFlit#(i, a, d))  req_mang_fifo <- mkFIFOF1;
-  FIFOF#(RspFlit#(i, d))         resp_mang_fifo <- mkFIFOF1;
+//(*synthesize*)
+module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
+  provisos (Add#(0, 64, d),          // Data needs to be 64 bits (for now).
+            //Add#(db_, TDiv#(d, 8), d),// Data should be bigger than itself divided by 8 (duh...)
+            //Div#(d, 8, dBytes),       // Data should be a multiple of bytes
+            Add#(aa_, 14, a),         // Address should be more than 14 bits.
+            Add#(ab_, a, d)           // Data size should be greater than or equal to address size
+            
+           );
+  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimMngt <- mkAXI4ShimUGFF;
+  let mngtAXI = shimMngt.master;
+  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimVirt <- mkAXI4ShimFF;
+  let virtAXI = shimVirt.master;
+
   /* Request data. */
-  FIFOF#(RequestRecord,ReqDepth) reqQue <- mkUGFIFOF;
-  Reg#(Bit#(64)) readResponseReg <- mkRegU;
+  FF#(RequestRecord#(i,a,d), ReqDepth) reqQue <- mkUGFF;
+  Reg#(Bit#(d)) readResponseReg <- mkRegU;
   Reg#(Bit#(32)) timeReg <- mkReg(0);
   Reg#(Bool) enabledReg <- mkReg(False);
   Reg#(Bit#(16)) nextReqId <- mkReg(0);
-  FIFOF#(RspFlit#(i, d)) responses <- mkFIFOF;
+  FF#(RspFlit#(i, d),2) responses <- mkFF;
   
   Bool verbose = True;
-  
-  //function Bit#(TDiv#(d,8)) sizeToByteEnables(AXI4_Size size) = ~((~0) << decodeSize(size));
 
   rule countTime;
     timeReg <= timeReg + 1;
   endrule
   /* Handle reads/writes to/from the virtual device adapter
    * slave interface. */
-  rule handleDevCommand;
-    ReqFlit#(i, a, d) req <- toGet(req_virt_fifo).get;
+  rule handleDevCommand(nextReq(virtAXI) matches tagged Valid .req);
+    dropReq(virtAXI);
     if (verbose) $display("<time %0t, virtDev> handle device request ", $time, fshow(req));
     if (enabledReg) begin
       Bool isRead = True;
@@ -175,32 +189,32 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d));
        For a read, we wait for the register interface to send a response
        and reply in the feedReadResp rule. */
     if (!enabledReg) begin
-      resp_virt_fifo.enq(defaultRspFromReq(req,0));
-      if (verbose) $display("<time %0t, virtDev> send device response when disabled ", $time, fshow(defaultRspFromReq(req)));
+      enqReq(virtAXI, defaultRspFromReq(req,0));
+      if (verbose) $display("<time %0t, virtDev> send device response when disabled ", $time, fshow(defaultRspFromReq(req,0)));
     end
   endrule: handleDevCommand
     
   /* Handle reads/writes to/from the management register interface */
-  rule handleMangCommand;
-    ReqFlit#(i, a, d) req <- toGet(req_mang_fifo).get;
+  rule handleMngtCommand(nextReq(mngtAXI) matches tagged Valid .req);
+    dropReq(mngtAXI);
     if (verbose) $display("<time %0t, virtDev> handle register request ", $time, fshow(req));
-    RspFlit#(i, d) resp = defaultRspFromReq(req);
+    RspFlit#(i, d) resp = defaultRspFromReq(req, ?);
 
     /* Handle register reads. */
-    RequestRecord next = reqQue.first;
+    RequestRecord#(i,a,d) next = reqQue.first;
     Bit#(11) offset = byte2wordAddr(truncate(getAddr(req)));
     case (req) matches
       tagged Read .ar: begin
-        AXI4_RFlit#(i,a,0) r = defaultValue;
-        r.arid = ar.arid;
-        r.data = 0;
+        AXI4_RFlit#(i,d,0) r = defaultValue;
+        r.rid = ar.arid;
+        r.rdata = 0;
         case (offset)
           /* 0x0000-0x0008 read address*/
           'h0: r.rdata = zeroExtend(pack(getAddr(next.req)));
           /* 0x0008-0x000C flit size: number of bytes to be accessed beyond the address. */
           'h1: begin
             if (next.req matches tagged Read .ar)
-              r.rdata = decodeSize(ar.arsize);
+              r.rdata = fromInteger(bytesFromAXI4_Size(ar.arsize));
           end
           /* 0x000C-0x0010 burst count: number of flits expected in the response.  We do not currently support burst responses. */
           'h2: begin
@@ -210,15 +224,15 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d));
           /* 0x0040-0x0080 readresponse_data, a read/write field.*/
           'h8: r.rdata = readResponseReg;
           /* 0x1000-0x1008 write address*/
-          'h200: r.rdata = zeroExtend(pack(getAddr(next.req));
+          'h200: r.rdata = zeroExtend(getAddr(next.req));
           /* 0x1008-0x100C write byte enable */
           'h201: begin
             if (next.req matches tagged Write .wr)
-              r.rdata = zeroExtend(pack(wr.w.wstrb));
+              r.rdata = zeroExtend(wr.w.wstrb);
           end
           /* 0x1040-0x1060 write data*/
           'h208: begin
-            if (next.req.operation matches tagged Write .wr)
+            if (next.req matches tagged Write .wr)
               r.rdata = wr.w.wdata;
           end
           /* 0x2000-0x2004 time stamp*/
@@ -226,7 +240,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d));
           'h400: begin
             Byte level = fromInteger(valueOf(ReqDepth)) - zeroExtend(reqQue.remaining);
             Byte nextIsWrite = (!next.isRead) ? 1:0;
-            r.rdata = zeroExtend({level,nextIsWrite,next.requestId,next.timeStamp});
+            r.rdata = {level,nextIsWrite,next.requestId,next.timeStamp};
           end
           /* 0x2008-0x2009 enable_device_emulation */
           'h401: r.rdata = zeroExtend(pack(enabledReg));
@@ -237,35 +251,36 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d));
         case (offset)
           /* 0x0040-0x0080 readresponse_data, a read/write field.*/
           'h8: begin
-            Vector#(8, Byte) neu = unpack(pack(wr.w.wdata));
-            Vector#(8, Byte) old = unpack(readResponseReg);
-            readResponseReg <= pack(zipWith3(choose, wr.w.wstrb, neu, old));
+            Vector#(TDiv#(d,8), Byte) neu = unpack(pack(wr.w.wdata));
+            Vector#(TDiv#(d,8), Byte) old = unpack(readResponseReg);
+            Vector#(TDiv#(d,8), Bool) stb = unpack(wr.w.wstrb);
+            readResponseReg <= pack(zipWith3(choose, stb, neu, old));
           end
           /* 0x2000-0x2040 write triggers response */
           'h400: begin
             if (reqQue.notEmpty) begin
               RspFlit#(i, d) virtResp = defaultRspFromReq(next.req, readResponseReg);
               if (verbose) $display("<time %0t, virtDev> send device response ", $time, fshow(virtResp));
-              resp_virt_fifo.enq(virtResp);
+              enqReq(virtAXI, virtResp);
               reqQue.deq();
             end else if (verbose) $display("<time %0t, virtDev> attempted device response when reqQue empty", $time);
           end
           /* 0x2008-0x2009 enable_device_emulation */
           'h401: begin
-            enabledReg <= unpack(wr.w.data[0]);
+            enabledReg <= unpack(wr.w.wdata[0]);
           end
         endcase
       end
     endcase
 
     /* Enqueue the response to management interface. */
-    resp_mang_fifo.enq(resp);
-  endrule: handleRegCommand
+    enqReq(mngtAXI, resp);
+  endrule: handleMngtCommand
 
   /* Slave for management interface exposing the samples in registers. */
-  interface management  = shimManagement.slave;
+  interface mngt  = shimMngt.slave;
   /* Slave interface exposing a large address space for virtualisation. */
-  interface virtual  = shimVirtual.slave;
+  interface virt  = shimVirt.slave;
 endmodule: mkVirtualDevice
 
 endpackage: VirtualDevice
