@@ -27,6 +27,7 @@
 
 package VirtualDevice;
 
+import ConfigReg::*;
 import FF::*;
 import SourceSink::*;
 import Vector::*;
@@ -157,17 +158,17 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
            );
   AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimMngt <- mkAXI4ShimUGFF;
   let mngtAXI = shimMngt.master;
-  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimVirt <- mkAXI4ShimFF;
+  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimVirt <- mkAXI4ShimUGFF;
   let virtAXI = shimVirt.master;
 
   /* Request data. */
   FF#(RequestRecord#(i,a,d), ReqDepth) reqQue <- mkUGFF;
-  Reg#(Bit#(d)) readResponseReg <- mkRegU;
-  Reg#(Bit#(32)) timeReg <- mkReg(0);
-  Reg#(Bool) enabledReg <- mkReg(False);
-  Reg#(Bit#(16)) nextReqId <- mkReg(0);
+  Reg#(Bit#(d)) readResponseReg <- mkConfigRegU;
+  Reg#(Bit#(32)) timeReg <- mkConfigReg(0);
+  Reg#(Bool) enabledReg <- mkConfigReg(False);
+  Reg#(Bit#(16)) nextReqId <- mkConfigReg(0);
   FF#(RspFlit#(i, d),2) responses <- mkFF;
-  
+
   Bool verbose = True;
 
   rule countTime;
@@ -175,7 +176,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
   endrule
   /* Handle reads/writes to/from the virtual device adapter
    * slave interface. */
-  rule handleDevCommand(nextReq(virtAXI) matches tagged Valid .req);
+  rule handleVirtRequest(nextReq(virtAXI) matches tagged Valid .req);
     dropReq(virtAXI);
     if (verbose) $display("<time %0t, virtDev> handle device request ", $time, fshow(req));
     if (enabledReg) begin
@@ -184,7 +185,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
       reqQue.enq(RequestRecord{isRead: isRead, timeStamp: timeReg, requestId: nextReqId, req: req});
       nextReqId <= nextReqId + 1;
     end
-    
+
     /* Enqueue the response on a write.
        For a read, we wait for the register interface to send a response
        and reply in the feedReadResp rule. */
@@ -192,10 +193,10 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
       enqReq(virtAXI, defaultRspFromReq(req,0));
       if (verbose) $display("<time %0t, virtDev> send device response when disabled ", $time, fshow(defaultRspFromReq(req,0)));
     end
-  endrule: handleDevCommand
-    
+  endrule: handleVirtRequest
+
   /* Handle reads/writes to/from the management register interface */
-  rule handleMngtCommand(nextReq(mngtAXI) matches tagged Valid .req);
+  rule handleMngtRequest(nextReq(mngtAXI) matches tagged Valid .req);
     dropReq(mngtAXI);
     if (verbose) $display("<time %0t, virtDev> handle register request ", $time, fshow(req));
     RspFlit#(i, d) resp = defaultRspFromReq(req, ?);
@@ -275,7 +276,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
 
     /* Enqueue the response to management interface. */
     enqReq(mngtAXI, resp);
-  endrule: handleMngtCommand
+  endrule: handleMngtRequest
 
   /* Slave for management interface exposing the samples in registers. */
   interface mngt  = shimMngt.slave;
