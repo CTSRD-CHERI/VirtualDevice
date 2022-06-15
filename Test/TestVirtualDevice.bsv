@@ -24,12 +24,32 @@
 import VirtualDevice::*;
 import AXI4::*;
 import SourceSink::*;
+import StmtFSM::*;
  
 (*synthesize*)
 module mkTestVirtualDevice();
   VirtualDeviceIfc#(2,32,64) vd <- mkVirtualDevice;
+  Reg#(Bool) did_init <- mkReg(False);
+  Stmt init_stmt = (seq
+    action
+      AXI4_AWFlit#(2,32,0) awFlit = defaultValue;
+      awFlit.awaddr = 32'h2008;
+      vd.mngt.aw.put(awFlit);
+      AXI4_WFlit#(64,0) wFlit = defaultValue;
+      wFlit.wdata = 1;
+      wFlit.wstrb = 1;
+      vd.mngt.w.put(wFlit);
+    endaction
+    while (!vd.mngt.b.canPeek) seq noAction; endseq
+    vd.mngt.b.drop;
+    did_init <= True;
+  endseq);
+  FSM init_fsm <- mkFSM(init_stmt);
+  rule start_init(!did_init);
+    init_fsm.start;
+  endrule
   
-  rule virtualRequest;
+  rule virtualRequest(did_init);
     AXI4_ARFlit#(2,32,0) readFlit = defaultValue;
     readFlit.araddr = 0;
     vd.virt.ar.put(readFlit);
@@ -41,9 +61,47 @@ module mkTestVirtualDevice();
     vd.virt.r.drop;
   endrule
   
-  rule managementRequest;
-  endrule
-  
-  rule managementResponse;
+  Reg#(Bit#(32)) count <- mkReg(0);
+  Reg#(Bool) serviceRequest <- mkReg(False);
+  Stmt manage_stmt = (seq
+    while (!serviceRequest) seq
+      action
+        AXI4_ARFlit#(2,32,0) arFlit = defaultValue;
+        arFlit.araddr = 32'h2000;
+        vd.mngt.ar.put(arFlit);
+      endaction
+      while (!vd.mngt.r.canPeek) seq noAction; endseq
+      serviceRequest <= vd.mngt.r.peek.rdata[63:56]>0; // The level of the request FIFO is non-zero;
+      $display("Management status register: %x", vd.mngt.r.peek.rdata);
+      vd.mngt.r.drop;
+    endseq
+    action
+      AXI4_AWFlit#(2,32,0) awFlit = defaultValue;
+      awFlit.awaddr = 32'h0040;
+      vd.mngt.aw.put(awFlit);
+      AXI4_WFlit#(64,0) wFlit = defaultValue;
+      wFlit.wdata = zeroExtend(count);
+      count <= count + 1;
+      wFlit.wstrb = 8'h0F;
+      vd.mngt.w.put(wFlit);
+    endaction
+    action
+      AXI4_AWFlit#(2,32,0) awFlit = defaultValue;
+      awFlit.awaddr = 32'h2000;
+      vd.mngt.aw.put(awFlit);
+      AXI4_WFlit#(64,0) wFlit = defaultValue;
+      wFlit.wdata = 1;
+      wFlit.wstrb = 1;
+      vd.mngt.w.put(wFlit);
+    endaction
+    while (!vd.mngt.b.canPeek) seq noAction; endseq
+    vd.mngt.b.drop;
+    while (!vd.mngt.b.canPeek) seq noAction; endseq
+    vd.mngt.b.drop;
+    serviceRequest <= False;
+  endseq);
+  FSM manage_fsm <- mkFSM(manage_stmt);
+  rule start_manage(did_init);
+    manage_fsm.start;
   endrule
 endmodule

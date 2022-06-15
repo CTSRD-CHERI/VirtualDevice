@@ -176,7 +176,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
   endrule
   /* Handle reads/writes to/from the virtual device adapter
    * slave interface. */
-  rule handleVirtRequest(nextReq(virtAXI) matches tagged Valid .req);
+  rule handleVirtRequest(nextReq(virtAXI) matches tagged Valid .req &&& reqQue.notFull);
     dropReq(virtAXI);
     if (verbose) $display("<time %0t, virtDev> handle device request ", $time, fshow(req));
     if (enabledReg) begin
@@ -257,7 +257,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
             Vector#(TDiv#(d,8), Bool) stb = unpack(wr.w.wstrb);
             readResponseReg <= pack(zipWith3(choose, stb, neu, old));
           end
-          /* 0x2000-0x2040 write triggers response */
+          /* 0x2000-0x2008 write triggers response */
           'h400: begin
             if (reqQue.notEmpty) begin
               RspFlit#(i, d) virtResp = defaultRspFromReq(next.req, readResponseReg);
@@ -268,6 +268,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
           end
           /* 0x2008-0x2009 enable_device_emulation */
           'h401: begin
+            if (verbose) $display("<time %0t, virtDev> wrote enabled bit %d -> %d", $time, enabledReg, wr.w.wdata[0]);
             enabledReg <= unpack(wr.w.wdata[0]);
           end
         endcase
