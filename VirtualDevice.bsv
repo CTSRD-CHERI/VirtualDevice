@@ -33,6 +33,7 @@ import SourceSink::*;
 import Vector::*;
 import Routable :: *;
 import AXI4::*;
+import AXI4_Utils::*;
 import DefaultValue::*;
 
 /**
@@ -280,9 +281,9 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
   endrule: handleMngtRequest
 
   /* Slave for management interface exposing the samples in registers. */
-  interface mngt  = shimMngt.slave;
+  interface mngt  = toGuarded_AXI4_Slave(shimMngt.slave);
   /* Slave interface exposing a large address space for virtualisation. */
-  interface virt  = shimVirt.slave;
+  interface virt  = toGuarded_AXI4_Slave(shimVirt.slave);
 endmodule: mkVirtualDevice
 
 endpackage: VirtualDevice

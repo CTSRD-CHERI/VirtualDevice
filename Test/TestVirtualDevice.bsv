@@ -48,7 +48,7 @@ module mkTestVirtualDevice();
   rule start_init(!did_init);
     init_fsm.start;
   endrule
-  
+
   rule virtualRequest(did_init);
     AXI4_ARFlit#(2,32,0) readFlit = defaultValue;
     readFlit.araddr = 0;
