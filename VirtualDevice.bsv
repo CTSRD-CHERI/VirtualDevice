@@ -35,6 +35,7 @@ import Routable :: *;
 import AXI4::*;
 import AXI4_Utils::*;
 import DefaultValue::*;
+import AXI4_Unified_Types::*;
 
 /**
  * An implementation of a peripheral that facilitates emulation of a virtual
@@ -50,80 +51,6 @@ interface VirtualDeviceIfc#(
   interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) mngt;
   interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) virt;
 endinterface
-
-/* Convenience functions to unify the AXI channels */
-
-typedef struct {
-  AXI4_AWFlit#(i,a,0) aw;
-  AXI4_WFlit#(d,0) w;
-} WriteReqFlit#(numeric type i, numeric type a, numeric type d)
-deriving (Bits, FShow);
-
-typedef union tagged {
-  WriteReqFlit#(i,a,d) Write;
-  AXI4_ARFlit#(i,a,0) Read;
-} ReqFlit#(numeric type i, numeric type a, numeric type d)
-deriving (Bits, FShow);
-instance DefaultValue#(ReqFlit#(i, a, d));
-  function defaultValue = tagged Read defaultValue;
-endinstance
-
-typedef union tagged {
-  AXI4_BFlit#(i,0) Write;
-  AXI4_RFlit#(i,d,0) Read;
-} RspFlit#(numeric type i, numeric type d)
-deriving (Bits, FShow);
-instance DefaultValue#(RspFlit#(i,d));
-  function defaultValue = tagged Write defaultValue;
-endinstance
-
-function RspFlit#(i,d) defaultRspFromReq(ReqFlit#(i,a,d) req, Bit#(d) data) =
-  case (req) matches
-    tagged Write .wr:
-      return tagged Write AXI4_BFlit{ bid: wr.aw.awid
-                                    , bresp: OKAY
-                                    , buser: ? };
-    tagged Read .ar: begin
-      AXI4_RFlit#(i,d,0) r = defaultValue;
-      r.rid = ar.arid;
-      r.rdata = data;
-      return tagged Read r;
-    end
-  endcase;
-
-function Bit#(a) getAddr(ReqFlit#(i,a,d) req) =
-  case (req) matches
-    tagged Write .wr: return wr.aw.awaddr;
-    tagged Read .ar: return ar.araddr;
-  endcase;
-
-function Maybe#(ReqFlit#(i, a, d)) nextReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim);
-  if (axim.ar.canPeek) return Valid(Read(axim.ar.peek));
-  else if (axim.w.canPeek) return
-        Valid(Write(WriteReqFlit {
-                aw: axim.aw.peek,
-                w: axim.w.peek
-        }));
-  else return Invalid;
-endfunction
-
-function Action dropReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim) = action
-  if (nextReq(axim) matches tagged Valid .r)
-    case (r) matches
-      tagged Read  .r: axim.ar.drop;
-      tagged Write .w: begin
-        if (isLast(axim.w.peek)) axim.aw.drop;
-        axim.w.drop;
-      end
-    endcase
-endaction;
-
-function Action enqReq(AXI4_Master#(i, a, d, 0, 0, 0, 0, 0) axim, RspFlit#(i, d) rsp) = action
-  case (rsp) matches
-    tagged Read  .r: axim.r.put(r);
-    tagged Write .w: axim.b.put(w);
-  endcase
-endaction;
 
 /* Other convenience types and functions  */
 
@@ -191,7 +118,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
        For a read, we wait for the register interface to send a response
        and reply in the feedReadResp rule. */
     if (!enabledReg) begin
-      enqReq(virtAXI, defaultRspFromReq(req,0));
+      enqRsp(virtAXI, defaultRspFromReq(req,0));
       if (verbose) $display("<time %0t, virtDev> send device response when disabled ", $time, fshow(defaultRspFromReq(req,0)));
     end
   endrule: handleVirtRequest
@@ -263,7 +190,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
             if (reqQue.notEmpty) begin
               RspFlit#(i, d) virtResp = defaultRspFromReq(next.req, readResponseReg);
               if (verbose) $display("<time %0t, virtDev> send device response ", $time, fshow(virtResp));
-              enqReq(virtAXI, virtResp);
+              enqRsp(virtAXI, virtResp);
               reqQue.deq();
             end else if (verbose) $display("<time %0t, virtDev> attempted device response when reqQue empty", $time);
           end
@@ -277,7 +204,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
     endcase
 
     /* Enqueue the response to management interface. */
-    enqReq(mngtAXI, resp);
+    enqRsp(mngtAXI, resp);
   endrule: handleMngtRequest
 
   /* Slave for management interface exposing the samples in registers. */

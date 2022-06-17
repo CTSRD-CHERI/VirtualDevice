@@ -20,12 +20,12 @@
  *
  * @BERiLICENSE_HEADER_END@
  */
- 
+
 import VirtualDevice::*;
 import AXI4::*;
 import SourceSink::*;
 import StmtFSM::*;
- 
+
 (*synthesize*)
 module mkTestVirtualDevice();
   VirtualDeviceIfc#(2,32,64) vd <- mkVirtualDevice;
