@@ -126,7 +126,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
   /* Handle reads/writes to/from the management register interface */
   rule handleMngtRequest(nextReq(mngtAXI) matches tagged Valid .req);
     dropReq(mngtAXI);
-    if (verbose) $display("<time %0t, virtDev> handle register request ", $time, fshow(req));
+    if (verbose) $display("<time %0t, virtDev> handle management request ", $time, fshow(req));
     RspFlit#(i, d) resp = defaultRspFromReq(req, ?);
 
     /* Handle register reads. */

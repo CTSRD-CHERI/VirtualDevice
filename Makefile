@@ -34,6 +34,7 @@ SIMDIR = $(BUILDDIR)/simdir
 OUTPUTDIR = output
 TOPMODULE = mkVirtualDevice
 TESTMODULE = mkTestVirtualDevice
+DRIVEMODULE = mkDriveVirtualDevice
 
 BSCFLAGS += -bdir $(BDIR)
 BSCFLAGS += -simdir $(SIMDIR)
@@ -43,7 +44,7 @@ BSCFLAGS += -sched-dot
 BSCFLAGS += -show-range-conflict
 #BSCFLAGS += -show-rule-rel \* \*
 #BSCFLAGS += -steps-warn-interval n
-LIBDIRS = %:BlueStuff:BlueStuff/BlueBasics:BlueStuff/BlueUtils:BlueStuff/AXI:+
+LIBDIRS = %:BlueStuff:BlueStuff/BlueBasics:BlueStuff/BlueUtils:BlueStuff/AXI:BSV-RVFI-DII/:+
 
 # Bluespec is not compatible with gcc > 4.9
 # This is actually problematic when using $test$plusargs
@@ -54,12 +55,17 @@ TESTSDIR = Test
 SIMTESTSSRC = $(sort $(wildcard $(TESTSDIR)/*.bsv))
 SIMTESTS = $(addprefix sim, $(notdir $(basename $(SIMTESTSSRC))))
 
-all: simTest verilog
+all: simTest simDrive verilog
 
 simTest: $(TESTSDIR)/TestVirtualDevice.bsv VirtualDevice.bsv
 	mkdir -p $(OUTPUTDIR)/$@-info $(BDIR) $(SIMDIR)
 	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -g $(TESTMODULE) -u $<
-	CC=$(CC) CXX=$(CXX) $(BSC) -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -e $(TESTMODULE) -o $(OUTPUTDIR)/$@
+	CC=$(CC) CXX=$(CXX) $(BSC) -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -o $(OUTPUTDIR)/$@ -e $(TESTMODULE)
+
+simDrive: $(TESTSDIR)/DriveVirtualDevice.bsv VirtualDevice.bsv BSV-RVFI-DII/SocketPacketUtils/socket_packet_utils.c
+	mkdir -p $(OUTPUTDIR)/$@-info $(BDIR) $(SIMDIR)
+	$(BSC) -info-dir $(OUTPUTDIR)/$@-info -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -g $(DRIVEMODULE) -u $<
+	CC=$(CC) CXX=$(CXX) $(BSC) -simdir $(SIMDIR) $(BSCFLAGS) -p $(LIBDIRS) -sim -o $(OUTPUTDIR)/$@ -e $(DRIVEMODULE) BSV-RVFI-DII/SocketPacketUtils/socket_packet_utils.c
 
 verilog: VirtualDevice.bsv
 	mkdir -p $(OUTPUTDIR)/$@-info $(BDIR)
@@ -70,7 +76,6 @@ verilog: VirtualDevice.bsv
 clean:
 	rm -f .simTests
 	rm -f -r $(BUILDDIR)
-	rm -f TagController/TagTableStructure.bsv
 
 mrproper: clean
 	rm -f -r $(OUTPUTDIR)
