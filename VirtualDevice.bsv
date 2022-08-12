@@ -203,6 +203,7 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
       end
     endcase
 
+    if (verbose) $display("<time %0t, virtDev> sending response", $time, fshow(resp));
     /* Enqueue the response to management interface. */
     enqRsp(mngtAXI, resp);
   endrule: handleMngtRequest
