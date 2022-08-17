@@ -45,11 +45,14 @@ import AXI4_Unified_Types::*;
  *
  */
 interface VirtualDeviceIfc#(
-  numeric type i,
-  numeric type a,
-  numeric type d);
-  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) mngt;
-  interface AXI4_Slave#(i, a, d, 0, 0, 0, 0, 0) virt;
+  numeric type im,
+  numeric type am,
+  numeric type dm,
+  numeric type iv,
+  numeric type av,
+  numeric type dv);
+  interface AXI4_Slave#(im, am, dm, 0, 0, 0, 0, 0) mngt;
+  interface AXI4_Slave#(iv, av, dv, 0, 0, 0, 0, 0) virt;
 endinterface
 
 /* Other convenience types and functions  */
@@ -64,8 +67,7 @@ typedef struct {
 typedef 64 ReqDepth;
 
 function Byte choose(Bool sel, Byte a, Byte b) = (sel) ? a:b;
-function Bit#(11) byte2wordAddr(Bit#(14) a) = truncate(a>>3);
-function Bit#(14) word2byteAddr(Bit#(11) a) = zeroExtend(a)<<3;
+function Bit#(11) byte2regAddr(Bit#(14) a) = truncate(a>>3);
 typedef struct {
    Bool isRead;
    Bit#(TAdd#(wordaddress_width,2))  addr; // word address
@@ -76,28 +78,52 @@ typedef struct {
  * address window for the virtual device.
  */
 //(*synthesize*)
-module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
-  provisos (Add#(0, 64, d),          // Data needs to be 64 bits (for now).
-            //Add#(db_, TDiv#(d, 8), d),// Data should be bigger than itself divided by 8 (duh...)
-            //Div#(d, 8, dBytes),       // Data should be a multiple of bytes
-            Add#(aa_, 14, a),         // Address should be more than 14 bits.
-            Add#(ab_, a, d)           // Data size should be greater than or equal to address size
-            
+module mkVirtualDevice (VirtualDeviceIfc#(im,am,dm,iv,av,dv))
+  provisos (Add#(d_  , 32, dm),         // Management data needs to be bigger than 32 bits.
+            Add#(d__ , 8, dm),
+            Add#(d___, TDiv#(dv, 8), dm), // Need to be able to read the byte enables.
+            Div#(dm, 8, dmBytes),       // Number of bytes the management interface can read.
+            Mul#(TDiv#(dm, 8), 8, dm),  // dm is an even multiple of 8
+            Add#(a___, 64, dv),         // dv is at least 64 (because I incedentally extend the widest control register into a 
+            Div#(dv, 8, dvBytes),       // Number of bytes of data for the virtualised interface.
+            Div#(dv, dm, dms_in_dv),    // Number of management data words that fit in a virtualised data word.
+            Mul#(dms_in_dv, dm, dv),    // Say it twice!  It's more fun!
+            Add#(aa_, 14, am),          // Address should be more than 14 bits.
+            Add#(a__, TLog#(dms_in_dv), am), // Address size should be bigger than the difference between the two data words.
+            Add#(ab_, av, dv)           // At some point we extend a Bit#(av) into a Bit#(dv), so this.
            );
-  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimMngt <- mkAXI4ShimUGFF;
+  
+  AXI4_Shim#(im, am, dm, 0, 0, 0, 0, 0) shimMngt <- mkAXI4ShimUGFF;
   let mngtAXI = shimMngt.master;
-  AXI4_Shim#(i, a, d, 0, 0, 0, 0, 0) shimVirt <- mkAXI4ShimUGFF;
+  AXI4_Shim#(iv, av, dv, 0, 0, 0, 0, 0) shimVirt <- mkAXI4ShimUGFF;
   let virtAXI = shimVirt.master;
 
   /* Request data. */
-  FF#(RequestRecord#(i,a,d), ReqDepth) reqQue <- mkUGFF;
-  Reg#(Bit#(d)) readResponseReg <- mkConfigRegU;
+  FF#(RequestRecord#(iv,av,dv), ReqDepth) reqQue <- mkUGFF;
+  Reg#(Bit#(dv)) readResponseReg <- mkConfigRegU;
   Reg#(Bit#(32)) timeReg <- mkConfigReg(0);
   Reg#(Bool) enabledReg <- mkConfigReg(False);
   Reg#(Bit#(16)) nextReqId <- mkConfigReg(0);
-  FF#(RspFlit#(i, d),2) responses <- mkFF;
+  FF#(RspFlit#(iv, dv),2) responses <- mkFF;
 
   Bool verbose = True;
+  
+  function Bit#(dat_narrow) select_dm_in_dv(Bit#(dat_wide) d, Bit#(ma) a)
+    provisos (Add#(a__, TLog#(dms_in_dv), ma),
+              Mul#(dms_in_dv, dat_narrow, dat_wide));
+    Vector#(dms_in_dv,Bit#(dat_narrow)) dm_vec = unpack(d);
+    Bit#(TLog#(dms_in_dv)) sel = truncate(a >> valueOf(TLog#(dmBytes)));
+    return dm_vec[sel];
+  endfunction
+  
+  function Bit#(dat_wide) insert_dm_into_dv(Bit#(dat_wide) d, Bit#(dat_narrow) d_ins, Bit#(ma) a)
+    provisos (Add#(a__, TLog#(dms_in_dv), ma),
+              Mul#(dms_in_dv, dat_narrow, dat_wide));
+    Vector#(dms_in_dv,Bit#(dat_narrow)) dm_vec = unpack(d);
+    Bit#(TLog#(dms_in_dv)) sel = truncate(a >> valueOf(TLog#(dmBytes)));
+    dm_vec[sel] = d_ins;
+    return pack(dm_vec);
+  endfunction
 
   rule countTime;
     timeReg <= timeReg + 1;
@@ -127,19 +153,22 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
   rule handleMngtRequest(nextReq(mngtAXI) matches tagged Valid .req);
     dropReq(mngtAXI);
     if (verbose) $display("<time %0t, virtDev> handle management request ", $time, fshow(req));
-    RspFlit#(i, d) resp = defaultRspFromReq(req, ?);
+    RspFlit#(im, dm) resp = defaultRspFromReq(req, ?);
 
     /* Handle register reads. */
-    RequestRecord#(i,a,d) next = reqQue.first;
-    Bit#(11) offset = byte2wordAddr(truncate(getAddr(req)));
+    RequestRecord#(iv,av,dv) next = reqQue.first;
+    Bit#(11) reg_addr = byte2regAddr(truncate(getAddr(req)));
     case (req) matches
       tagged Read .ar: begin
-        AXI4_RFlit#(i,d,0) r = defaultValue;
+        AXI4_RFlit#(im,dm,0) r = defaultValue;
         r.rid = ar.arid;
         r.rdata = 0;
-        case (offset)
+        case (reg_addr)
           /* 0x0000-0x0008 read address*/
-          'h0: r.rdata = zeroExtend(pack(getAddr(next.req)));
+          'h0: begin
+            Bit#(dv) wide = zeroExtend(pack(getAddr(next.req)));
+            r.rdata = select_dm_in_dv(wide, getAddr(req));
+          end
           /* 0x0008-0x000C flit size: number of bytes to be accessed beyond the address. */
           'h1: begin
             if (next.req matches tagged Read .ar)
@@ -151,44 +180,54 @@ module mkVirtualDevice (VirtualDeviceIfc#(i,a,d))
               r.rdata = zeroExtend(ar.arlen);
           end
           /* 0x0040-0x0080 readresponse_data, a read/write field.*/
-          'h8: r.rdata = readResponseReg;
+          'h8: begin
+              r.rdata = select_dm_in_dv(readResponseReg, getAddr(req));
+          end
           /* 0x1000-0x1008 write address*/
-          'h200: r.rdata = zeroExtend(getAddr(next.req));
+          'h200: begin
+            Bit#(dv) wide = zeroExtend(pack(getAddr(next.req)));
+            r.rdata = select_dm_in_dv(wide, getAddr(req));
+          end
           /* 0x1008-0x100C write byte enable */
           'h201: begin
             if (next.req matches tagged Write .wr)
               r.rdata = zeroExtend(wr.w.wstrb);
           end
           /* 0x1040-0x1060 write data*/
-          'h208: begin
+          'h208, 'h209, 'h20a, 'h20b: begin
             if (next.req matches tagged Write .wr)
-              r.rdata = wr.w.wdata;
+              r.rdata = select_dm_in_dv(wr.w.wdata, getAddr(req));
           end
           /* 0x2000-0x2004 time stamp*/
           /* 0x2004-0x2008 request_level (0x2007), request_is_write (0x2006), request_id (0x2004-0x2005) */
           'h400: begin
             Byte level = fromInteger(valueOf(ReqDepth)) - zeroExtend(reqQue.remaining);
             Byte nextIsWrite = (!next.isRead) ? 1:0;
-            r.rdata = {level,nextIsWrite,next.requestId,next.timeStamp};
+            Bit#(dv) wide = zeroExtend({level,nextIsWrite,next.requestId,next.timeStamp});
+            r.rdata = select_dm_in_dv(wide, getAddr(req));
           end
           /* 0x2008-0x2009 enable_device_emulation */
-          'h401: r.rdata = zeroExtend(pack(enabledReg));
+          'h401: begin
+            Bit#(32) wide = zeroExtend(pack(enabledReg));
+            r.rdata = zeroExtend(wide);
+          end
         endcase
         resp = tagged Read r;
       end
       tagged Write .wr: begin
-        case (offset)
+        case (reg_addr)
           /* 0x0040-0x0080 readresponse_data, a read/write field.*/
-          'h8: begin
-            Vector#(TDiv#(d,8), Byte) neu = unpack(pack(wr.w.wdata));
-            Vector#(TDiv#(d,8), Byte) old = unpack(readResponseReg);
-            Vector#(TDiv#(d,8), Bool) stb = unpack(wr.w.wstrb);
-            readResponseReg <= pack(zipWith3(choose, stb, neu, old));
+          'h8, 'h9, 'ha, 'hb: begin
+            Vector#(dmBytes, Byte) neu = unpack(wr.w.wdata);
+            Vector#(dmBytes, Byte) old = unpack(select_dm_in_dv(readResponseReg, getAddr(req)));
+            Vector#(dmBytes, Bool) stb = unpack(wr.w.wstrb);
+            neu = unpack(pack(zipWith3(choose, stb, neu, old)));
+            readResponseReg <= insert_dm_into_dv(readResponseReg, pack(neu), getAddr(req));
           end
           /* 0x2000-0x2008 write triggers response */
           'h400: begin
             if (reqQue.notEmpty) begin
-              RspFlit#(i, d) virtResp = defaultRspFromReq(next.req, readResponseReg);
+              RspFlit#(iv, dv) virtResp = defaultRspFromReq(next.req, pack(readResponseReg));
               if (verbose) $display("<time %0t, virtDev> send device response ", $time, fshow(virtResp));
               enqRsp(virtAXI, virtResp);
               reqQue.deq();
