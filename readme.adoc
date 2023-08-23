@@ -1,0 +1,50 @@
+= VirtualDevice
+
+The Bluespec AXI VirtualDevice is a component intended to act as a virtual device, presenting both a "device" interface and a "management" interface.
+The "device" interface simply blocks on any request, waiting for the "management" interface to specify and trigger a response.
+The assumption is that you have both a CPU that is master to this virtual device, and an independent CPU providing the virtualisation of the device which is exercising the management interface.
+
+The VirtualDevice enables emulating I/O registers from a general-purpose CPU.
+The "management" interface allows a general-purpose processor to atomically observe all reads and writes to the "device" interface through the register interface defined in the following table:
+
+[cols="1,1,1,1"]
+|===
+| offset |   width | use | name
+
+| 0x0000 |  8 bytes | ro | read_address
+| 0x0008 |  4 bytes | ro | read_flit_size
+| 0x000C |  4 bytes | ro | read_burst_count
+| 0x0040 | 64 bytes | rw | read_response_data
+| 0x1000 |  8 bytes | ro | write_address
+| 0x1008 |  4 bytes | ro | write_byte_enable
+| 0x1040 | 32 bytes | ro | write_data
+| 0x2000 |  4 bytes | ro | time_stamp
+| 0x2004 |  2 bytes | ro | request_id
+| 0x2006 |  1 byte  | ro | request_is_write
+| 0x2007 |  1 byte  | rw | request_level/send_response
+| 0x2008 |  1 byte  | rw | enable_device_emulation
+|===
+
+== To emulate a read:
+
+. Read request_level/send_response to determine that a valid request is present, that is, if the level is non-zero.
+. Read request_is_write as 0x0 to determine that a read request is now active.
+. Read the address from the read_address register.
+. Read the read_burst_count register to determine the number of flits expected.
+. Read the read_flit_size to determine the bytes expected to be populated in each flit. This is expected to be 32 if read_burst_count is greater than 1.
+. Populate read_response_data with the data for all flits (should be either 1 or 4 flits in a standard BERI system). For a single-word access, the read_flit_size will give the number of bytes. These bytes should be inserted into memory for the first 32-byte flit at the alignment implied by read_address.
+. Write any value to request_level/send_response to send the read response and to deq this request.
+
+== To emulate a write:
+
+. Read request_level/send_response to determine that a valid request is present, that is, if the level is non-zero.
+. Read request_is_write as 0x1 to determine that a write request is now active.
+. Read the address from the write_address register.
+. Read the write_byte_enable register to determine the bytes expected to be updated.
+. Read the data from write_data, applying the mask from write_byte_enable, and update the relevant structure implied by the write_address.
+. Write any value to request_level/send_response to deq this request and send the write response.
+
+== Notes
+
+The enable_device_emulation is off (with a value of 0x0) upon reset and causes this device to simply return 0s and ignore writes to the emulated_device_window to prevent system instability.
+The emulating processor is expected to write a 0x1 to enable_device_emulation when it begins servicing reads and writes to the emulated_device_window.
